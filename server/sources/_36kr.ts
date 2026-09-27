@@ -3,7 +3,7 @@ import { load } from "cheerio"
 import dayjs from "dayjs/esm"
 
 const requestOptions = {
-  timeout: 4000,
+  timeout: 2500,
   retry: 0,
   responseType: "text" as const,
   headers: {
@@ -145,15 +145,39 @@ const renqi = defineSource(async () => {
     }
   }
 
-  const latest = await quick()
-  if (!latest.length) throw new Error("36kr popularity list and newsflashes are unavailable")
-  return latest.map(item => ({
+  const latest = await quick().catch(() => [])
+  if (latest.length) return latest.map(item => ({
     ...item,
     extra: {
       ...item.extra,
       info: "人气榜暂不可用，显示最新快讯",
     },
   }))
+
+  // The official RSS mixes articles and newsflashes, not popularity-ranked news.
+  // Three page attempts plus this feed stay below 12 seconds without retries.
+  const feed = await rss2json("https://www.36kr.com/feed", { timeout: 4000, retry: 0 })
+  const articles = (feed?.items ?? []).filter(item => typeof item.title === "string" && item.title.trim()
+    && typeof item.link === "string" && /^https?:\/\/(?:www\.)?36kr\.com\/(?:p|newsflashes)\/\d+(?:[/?#]|$)/.test(item.link))
+    .map((item) => {
+      const isoDate = typeof item.created === "string"
+        ? item.created.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\s+([+-]\d{2})(\d{2})$/, "$1T$2$3:$4")
+        : ""
+      const date = Date.parse(isoDate)
+      return {
+        id: item.link,
+        title: item.title,
+        url: item.link,
+        pubDate: Number.isFinite(date) ? date : undefined,
+        extra: { info: "人气榜暂不可用，显示最新资讯（官方RSS）" },
+      }
+    }).sort((a, b) => {
+      if (a.pubDate === undefined) return b.pubDate === undefined ? 0 : 1
+      if (b.pubDate === undefined) return -1
+      return b.pubDate - a.pubDate
+    })
+  if (!articles.length) throw new Error("36kr popularity list, newsflashes and official feed are unavailable")
+  return articles
 })
 
 export default defineSource({
