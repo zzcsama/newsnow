@@ -2,10 +2,20 @@ import type { NewsItem } from "@shared/types"
 import { load } from "cheerio"
 import dayjs from "dayjs/esm"
 
+const requestOptions = {
+  timeout: 4000,
+  retry: 0,
+  responseType: "text" as const,
+  headers: {
+    Referer: "https://www.36kr.com/",
+    Accept: "text/html,application/xhtml+xml",
+  },
+}
+
 const quick = defineSource(async () => {
   const baseURL = "https://www.36kr.com"
   const url = `${baseURL}/newsflashes`
-  const response = await myFetch(url) as any
+  const response = await myFetch(url, requestOptions) as string
   const $ = load(response)
   const news: NewsItem[] = []
   const $items = $(".newsflash-item")
@@ -30,20 +40,8 @@ const quick = defineSource(async () => {
   return news
 })
 
-const renqi = defineSource(async () => {
+function parsePopularityHtml(response: string): NewsItem[] {
   const baseURL = "https://36kr.com"
-  const formatted = dayjs().format("YYYY-MM-DD")
-  const url = `${baseURL}/hot-list/renqi/${formatted}/1`
-
-  const response = await myFetch<any>(url, {
-    headers: {
-      "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-      "Referer": "https://www.freebuf.com/",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    },
-  })
-
   const $ = load(response)
   const articles: NewsItem[] = []
 
@@ -79,7 +77,58 @@ const renqi = defineSource(async () => {
       })
     }
   })
-  return articles
+  if (articles.length) return articles
+
+  // The official catalog embeds the same popularity list in page data.
+  const initialState = response.match(/window\.initialState\s*=\s*(\{.*\})/)
+  if (!initialState) return []
+  try {
+    const items = JSON.parse(initialState[1])?.hotListData?.topList
+    if (!Array.isArray(items)) return []
+    return items.filter(item => item.itemType !== 0).map((item) => {
+      const article = item.templateMaterial ?? item
+      return {
+        id: String(article.itemId ?? ""),
+        title: String(article.widgetTitle ?? "").replace(/<\/?em>/g, ""),
+        url: `${baseURL}/p/${article.itemId}`,
+        extra: {
+          info: article.authorName,
+          hover: article.summary,
+        },
+      }
+    }).filter(item => item.id && item.title)
+  } catch {
+    return []
+  }
+}
+
+const renqi = defineSource(async () => {
+  // Use the source's calendar day even when the Worker runs in UTC.
+  const formatted = dayjs(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const urls = [
+    `https://36kr.com/hot-list/renqi/${formatted}/1`,
+    "https://www.36kr.com/hot-list/catalog",
+  ]
+
+  for (const url of urls) {
+    try {
+      const response = await myFetch(url, requestOptions) as string
+      const articles = parsePopularityHtml(response)
+      if (articles.length) return articles
+    } catch {
+      // Try the next official source when the request is blocked or unavailable.
+    }
+  }
+
+  const latest = await quick()
+  if (!latest.length) throw new Error("36kr popularity list and newsflashes are unavailable")
+  return latest.map(item => ({
+    ...item,
+    extra: {
+      ...item.extra,
+      info: "人气榜暂不可用，显示最新快讯",
+    },
+  }))
 })
 
 export default defineSource({

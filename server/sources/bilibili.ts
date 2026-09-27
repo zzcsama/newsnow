@@ -1,3 +1,5 @@
+import type { NewsItem } from "@shared/types"
+
 interface WapRes {
   code: number
   exp_str: string
@@ -88,18 +90,56 @@ interface HotVideoRes {
   }
 }
 
-const hotSearch = defineSource(async () => {
-  const url = "https://s.search.bilibili.com/main/hotword?limit=30"
-  const res: WapRes = await myFetch(url)
+interface HotSearchEntry {
+  keyword: string
+  show_name?: string
+  icon?: string
+}
 
-  return res.list.map(k => ({
-    id: k.keyword,
-    title: k.show_name,
-    url: `https://search.bilibili.com/all?keyword=${encodeURIComponent(k.keyword)}`,
-    extra: {
-      icon: k.icon,
-    },
-  }))
+interface SquareRes {
+  code: number
+  data?: {
+    trending?: {
+      list?: HotSearchEntry[]
+    }
+  }
+}
+
+function mapHotSearch(items: HotSearchEntry[]): NewsItem[] {
+  return items.flatMap((item) => {
+    const keyword = typeof item?.keyword === "string" ? item.keyword.trim() : ""
+    if (!keyword) return []
+    return [{
+      id: keyword,
+      title: typeof item.show_name === "string" && item.show_name.trim() ? item.show_name : keyword,
+      url: `https://search.bilibili.com/all?keyword=${encodeURIComponent(keyword)}`,
+      extra: {
+        icon: typeof item.icon === "string" ? item.icon : undefined,
+      },
+    }]
+  })
+}
+
+async function fetchLegacyHotSearch(): Promise<NewsItem[]> {
+  const url = "https://s.search.bilibili.com/main/hotword?limit=30"
+  const res: WapRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  if (res?.code !== 0 || !Array.isArray(res.list)) throw new Error("Cannot fetch Bilibili hot words")
+  return mapHotSearch(res.list)
+}
+
+async function fetchSquareHotSearch(): Promise<NewsItem[]> {
+  const url = "https://api.bilibili.com/x/web-interface/wbi/search/square?limit=10&platform=web"
+  const res: SquareRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  const list = res?.data?.trending?.list
+  if (res?.code !== 0 || !Array.isArray(list)) throw new Error("Cannot fetch Bilibili hot search")
+  const news = mapHotSearch(list)
+  if (!news.length) throw new Error("Cannot fetch Bilibili hot search")
+  return news
+}
+
+const hotSearch = defineSource(async () => {
+  const news = await fetchLegacyHotSearch().catch(() => [])
+  return news.length ? news : fetchSquareHotSearch()
 })
 
 const hotVideo = defineSource(async () => {
