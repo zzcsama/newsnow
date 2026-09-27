@@ -129,14 +129,14 @@ function mapHotSearch(items: HotSearchEntry[]): NewsItem[] {
 
 async function fetchLegacyHotSearch(): Promise<NewsItem[]> {
   const url = "https://s.search.bilibili.com/main/hotword?limit=30"
-  const res: WapRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  const res: WapRes = await myFetch(url, { timeout: 2000, retry: 0 })
   if (res?.code !== 0 || !Array.isArray(res.list)) throw new Error("Cannot fetch Bilibili hot words")
   return mapHotSearch(res.list)
 }
 
 async function fetchSquareHotSearch(): Promise<NewsItem[]> {
   const url = "https://api.bilibili.com/x/web-interface/wbi/search/square?limit=10&platform=web"
-  const res: SquareRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  const res: SquareRes = await myFetch(url, { timeout: 2000, retry: 0 })
   const list = res?.data?.trending?.list
   if (res?.code !== 0 || !Array.isArray(list)) throw new Error("Cannot fetch Bilibili hot search")
   const news = mapHotSearch(list)
@@ -147,7 +147,7 @@ async function fetchSquareHotSearch(): Promise<NewsItem[]> {
 async function fetchAppHotSearch(): Promise<NewsItem[]> {
   // The app publishes its own hot-search ranking on a separate Bilibili host.
   const url = "https://app.bilibili.com/x/v2/search/trending/ranking?limit=30"
-  const res: AppHotSearchRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  const res: AppHotSearchRes = await myFetch(url, { timeout: 2000, retry: 0 })
   const list = res?.data?.list
   if (res?.code !== 0 || !Array.isArray(list)) throw new Error("Cannot fetch Bilibili app hot search")
   const news = mapHotSearch(list)
@@ -158,11 +158,53 @@ async function fetchAppHotSearch(): Promise<NewsItem[]> {
   }))
 }
 
-const hotSearch = defineSource(async () => {
+async function fetchPopularFallback(): Promise<NewsItem[]> {
+  const url = "https://api.bilibili.com/x/web-interface/popular"
+  const res: HotVideoRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  if (res?.code !== 0 || !Array.isArray(res?.data?.list)) throw new Error("Cannot fetch Bilibili popular videos")
+  const news = res.data.list.flatMap((video): NewsItem[] => {
+    const bvid = video?.bvid
+    const title = typeof video?.title === "string" ? video.title.trim() : ""
+    if (typeof bvid !== "string" || !/^BV[0-9A-Za-z]{10}$/.test(bvid) || !title) return []
+    return [{
+      id: bvid,
+      title,
+      url: `https://www.bilibili.com/video/${bvid}`,
+      pubDate: typeof video.pubdate === "number" && Number.isFinite(video.pubdate) && video.pubdate > 0 ? video.pubdate * 1000 : undefined,
+      extra: {
+        info: "热搜暂不可用，显示热门视频",
+        hover: typeof video.desc === "string" ? video.desc : undefined,
+        icon: typeof video.pic === "string" ? video.pic : undefined,
+      },
+    }]
+  })
+  if (!news.length) throw new Error("Cannot fetch Bilibili popular videos")
+  return news
+}
+
+async function fetchHotSearchWithFallbacks(): Promise<NewsItem[]> {
   const news = await fetchLegacyHotSearch().catch(() => [])
   if (news.length) return news
   const appNews = await fetchAppHotSearch().catch(() => [])
-  return appNews.length ? appNews : fetchSquareHotSearch()
+  if (appNews.length) return appNews
+  const squareNews = await fetchSquareHotSearch().catch(() => [])
+  return squareNews.length ? squareNews : fetchPopularFallback()
+}
+
+const hotSearch = defineSource(async () => {
+  // The four requests total at most 10 seconds of configured timeouts.
+  // Bound the full response as well so a source never holds the page indefinitely.
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      fetchHotSearchWithFallbacks(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Bilibili source time budget exceeded")), 11500)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 })
 
 const hotVideo = defineSource(async () => {

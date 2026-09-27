@@ -164,6 +164,17 @@ function NewsCard({ id, setHandleRef }: NewsCardProps) {
       >
         <div className={$("transition-opacity-500", isFetching && "op-20")}>
           {!!data?.items?.length && (sources[id].type === "hottest" ? <NewsListHot items={data.items} /> : <NewsListTimeLine items={data.items} />)}
+          {isError && !data?.items?.length && (
+            <div className="flex flex-col items-center gap-4 py-16 px-4 text-center" role="status">
+              <p className="text-sm op-70">暂时无法读取该来源，可以稍后重试或直接浏览官网。</p>
+              <div className="flex gap-4 text-sm">
+                <button type="button" className="underline underline-offset-4" onClick={() => refresh(id)} disabled={isFetching}>
+                  {isFetching ? "正在重试…" : "重新获取"}
+                </button>
+                <a href={sources[id].home} target="_blank" rel="noopener noreferrer" className="underline underline-offset-4">打开来源网站</a>
+              </div>
+            </div>
+          )}
         </div>
       </OverlayScrollbar>
     </>
@@ -172,8 +183,8 @@ function NewsCard({ id, setHandleRef }: NewsCardProps) {
 
 function UpdatedTime({ isError, updatedTime }: { updatedTime: any, isError: boolean }) {
   const relativeTime = useRelativeTime(updatedTime ?? "")
+  if (isError) return relativeTime ? "更新失败 · 保留上次内容" : "暂时无法获取"
   if (relativeTime) return `${relativeTime}更新`
-  if (isError) return "获取失败"
   return "加载中..."
 }
 

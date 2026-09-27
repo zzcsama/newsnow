@@ -16,6 +16,7 @@ export async function rss2json(url: string, options?: { timeout?: number, retry?
 
   let channel = result.rss && result.rss.channel ? result.rss.channel : result.feed
   if (Array.isArray(channel)) channel = channel[0]
+  if (!channel || typeof channel !== "object") throw new Error("Upstream response is not a valid RSS or Atom feed")
 
   const rss = {
     title: channel.title ?? "",

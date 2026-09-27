@@ -3,7 +3,7 @@ import { load } from "cheerio"
 import dayjs from "dayjs/esm"
 
 const requestOptions = {
-  timeout: 2500,
+  timeout: 2000,
   retry: 0,
   responseType: "text" as const,
   headers: {
@@ -40,6 +40,10 @@ const quick = defineSource(async () => {
   if (news.length) return news
   // The official page can deliver its list as server-rendered page data.
   const items = parseInitialState(response)?.newsflashCatalogData?.data?.newsflashList?.data?.itemList
+  return mapNewsflashes(items)
+})
+
+function mapNewsflashes(items: unknown): NewsItem[] {
   if (!Array.isArray(items)) return []
   return items.flatMap((item): NewsItem[] => {
     const flash = item?.templateMaterial ?? item
@@ -49,13 +53,35 @@ const quick = defineSource(async () => {
     return [{
       id: `/newsflashes/${id}`,
       title,
-      url: `${baseURL}/newsflashes/${id}`,
+      url: `https://www.36kr.com/newsflashes/${id}`,
       extra: {
         date: typeof flash.publishTime === "number" && Number.isFinite(flash.publishTime) ? flash.publishTime : undefined,
       },
     }]
   })
-})
+}
+
+async function fetchGatewayNewsflashes(): Promise<NewsItem[]> {
+  // Reproduce the official anonymous web client's request with a fresh public nonce.
+  const html = await myFetch("https://www.36kr.com/rss-center", { ...requestOptions, timeout: 1500 }) as string
+  const nonce = /window\.__GATEWAY_SIGN__\s*=\s*["']([^"']+)["']/.exec(html)?.[1]
+  if (!nonce || html.includes("_wafchallenge")) return []
+  const body = JSON.stringify({
+    nonce,
+    partner_id: "web",
+    timestamp: Date.now(),
+    param: { pageSize: 20, pageEvent: 0, pageCallback: "", siteId: 1, type: 0, platformId: 2 },
+  })
+  const sign = await md5(body + nonce)
+  const response: { code?: number, data?: { itemList?: unknown } } = await myFetch(`https://gateway.36kr.com/api/mis/nav/newsflash/list?sign=${sign}`, {
+    timeout: 2000,
+    retry: 0,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  })
+  return response?.code === 0 ? mapNewsflashes(response.data?.itemList) : []
+}
 
 function parseInitialState(response: string) {
   const initialState = response.match(/window\.initialState\s*=\s*(\{.*\})/)
@@ -155,8 +181,7 @@ const renqi = defineSource(async () => {
   }))
 
   // The official RSS mixes articles and newsflashes, not popularity-ranked news.
-  // Three page attempts plus this feed stay below 12 seconds without retries.
-  const feed = await rss2json("https://www.36kr.com/feed", { timeout: 4000, retry: 0 })
+  const feed = await rss2json("https://www.36kr.com/feed", { timeout: 2000, retry: 0 }).catch(() => undefined)
   const articles = (feed?.items ?? []).filter(item => typeof item.title === "string" && item.title.trim()
     && typeof item.link === "string" && /^https?:\/\/(?:www\.)?36kr\.com\/(?:p|newsflashes)\/\d+(?:[/?#]|$)/.test(item.link))
     .map((item) => {
@@ -176,8 +201,15 @@ const renqi = defineSource(async () => {
       if (b.pubDate === undefined) return -1
       return b.pubDate - a.pubDate
     })
-  if (!articles.length) throw new Error("36kr popularity list, newsflashes and official feed are unavailable")
-  return articles
+  if (articles.length) return articles
+
+  // All attempts total at most 11.5 seconds of network timeout, with no retries.
+  const gatewayNews = await fetchGatewayNewsflashes().catch(() => [])
+  if (gatewayNews.length) return gatewayNews.map(item => ({
+    ...item,
+    extra: { ...item.extra, info: "人气榜暂不可用，显示最新快讯" },
+  }))
+  throw new Error("36kr popularity list, newsflashes and official feed are unavailable")
 })
 
 export default defineSource({
