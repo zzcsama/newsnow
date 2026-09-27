@@ -105,6 +105,13 @@ interface SquareRes {
   }
 }
 
+interface AppHotSearchRes {
+  code: number
+  data?: {
+    list?: HotSearchEntry[]
+  }
+}
+
 function mapHotSearch(items: HotSearchEntry[]): NewsItem[] {
   return items.flatMap((item) => {
     const keyword = typeof item?.keyword === "string" ? item.keyword.trim() : ""
@@ -137,9 +144,25 @@ async function fetchSquareHotSearch(): Promise<NewsItem[]> {
   return news
 }
 
+async function fetchAppHotSearch(): Promise<NewsItem[]> {
+  // The app publishes its own hot-search ranking on a separate Bilibili host.
+  const url = "https://app.bilibili.com/x/v2/search/trending/ranking?limit=30"
+  const res: AppHotSearchRes = await myFetch(url, { timeout: 4000, retry: 0 })
+  const list = res?.data?.list
+  if (res?.code !== 0 || !Array.isArray(list)) throw new Error("Cannot fetch Bilibili app hot search")
+  const news = mapHotSearch(list)
+  if (!news.length) throw new Error("Cannot fetch Bilibili app hot search")
+  return news.map(item => ({
+    ...item,
+    extra: { ...item.extra, info: "手机端热搜" },
+  }))
+}
+
 const hotSearch = defineSource(async () => {
   const news = await fetchLegacyHotSearch().catch(() => [])
-  return news.length ? news : fetchSquareHotSearch()
+  if (news.length) return news
+  const appNews = await fetchAppHotSearch().catch(() => [])
+  return appNews.length ? appNews : fetchSquareHotSearch()
 })
 
 const hotVideo = defineSource(async () => {

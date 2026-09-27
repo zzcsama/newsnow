@@ -37,8 +37,35 @@ const quick = defineSource(async () => {
     }
   })
 
-  return news
+  if (news.length) return news
+  // The official page can deliver its list as server-rendered page data.
+  const items = parseInitialState(response)?.newsflashCatalogData?.data?.newsflashList?.data?.itemList
+  if (!Array.isArray(items)) return []
+  return items.flatMap((item): NewsItem[] => {
+    const flash = item?.templateMaterial ?? item
+    const id = flash?.itemId
+    const title = typeof flash?.widgetTitle === "string" ? flash.widgetTitle.replace(/<\/?em>/g, "").trim() : ""
+    if (!title || !(typeof id === "string" ? /^\d+$/.test(id) : Number.isSafeInteger(id) && id > 0)) return []
+    return [{
+      id: `/newsflashes/${id}`,
+      title,
+      url: `${baseURL}/newsflashes/${id}`,
+      extra: {
+        date: typeof flash.publishTime === "number" && Number.isFinite(flash.publishTime) ? flash.publishTime : undefined,
+      },
+    }]
+  })
 })
+
+function parseInitialState(response: string) {
+  const initialState = response.match(/window\.initialState\s*=\s*(\{.*\})/)
+  if (!initialState) return
+  try {
+    return JSON.parse(initialState[1])
+  } catch {
+    return undefined
+  }
+}
 
 function parsePopularityHtml(response: string): NewsItem[] {
   const baseURL = "https://36kr.com"
@@ -80,10 +107,8 @@ function parsePopularityHtml(response: string): NewsItem[] {
   if (articles.length) return articles
 
   // The official catalog embeds the same popularity list in page data.
-  const initialState = response.match(/window\.initialState\s*=\s*(\{.*\})/)
-  if (!initialState) return []
   try {
-    const items = JSON.parse(initialState[1])?.hotListData?.topList
+    const items = parseInitialState(response)?.hotListData?.topList
     if (!Array.isArray(items)) return []
     return items.filter(item => item.itemType !== 0).map((item) => {
       const article = item.templateMaterial ?? item
